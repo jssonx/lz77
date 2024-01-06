@@ -235,7 +235,7 @@ int CompressFile(const char *inputFileName, const char *outputFileName)
     }
 
     ctx.output = NULL;
-    ctx.outputLength = LZ77Encode(&ctx);
+    ctx.outputLength = ctx.inputLength;
     ctx.output = (char *)malloc(ctx.outputLength);
     if (!ctx.output)
     {
@@ -245,16 +245,16 @@ int CompressFile(const char *inputFileName, const char *outputFileName)
         return -1;
     }
 
-    LZ77Encode(&ctx);
-    SaveFile(outputFileName, ctx.output, ctx.outputLength);
+    int outputLength = LZ77Encode(&ctx);
+    SaveFile(outputFileName, ctx.output, outputLength);
 
     end = clock();
     cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
     speed = (ctx.inputLength / (1024.0 * 1024.0)) / cpu_time_used; // MB/s
 
     printf("raw size: %d\n", ctx.inputLength);
-    printf("lz77 size: %d\n", ctx.outputLength);
-    printf("ratio: %.2f\n", (double)ctx.inputLength / ctx.outputLength);
+    printf("lz77 size: %d\n", outputLength);
+    printf("ratio: %.2f\n", (double)ctx.inputLength / outputLength);
     printf("speed: %.2f MB/s\n", speed);
 
     free(ctx.input);
