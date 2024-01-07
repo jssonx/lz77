@@ -6,9 +6,9 @@
 
 #define HASH_SIZE 65535
 #define MAX_OFFSET 65535
-#define MAX_LEN 255
-#define MAX_LIT 255
-#define DECOMPRESSION_BUFFER_MULTIPLIER 10
+#define MAX_LEN 127
+#define MAX_LIT 127
+
 
 typedef struct
 {
@@ -20,6 +20,67 @@ typedef struct
     int outputIndex;
     int literalCount;
 } LZ77Context;
+
+
+// Function prototypes
+int CompressFile(const char *inputFileName, const char *outputFileName);
+int DecompressFile(const char *inputFileName, const char *outputFileName);
+
+// LZ77 functions
+int FindMatch(LZ77Context *ctx, int idx, int *off);
+void WriteLiteral(LZ77Context *ctx, int idx);
+void WriteCompressedBlock(LZ77Context *ctx, int len, int off);
+void UpdateHash(LZ77Context *ctx, int idx);
+int LZ77Encode(LZ77Context *ctx);
+int LZ77Decode(LZ77Context *ctx);
+void AdjustOutputBufferSize(LZ77Context *ctx, int additionalBytesNeeded);
+
+// Helper functions
+long LoadFile(const char *fileName, char **buffer);
+int SaveFile(const char *fileName, const char *buffer, int count);
+void PrintUsage(const char *programName);
+
+int main(int argc, char **argv)
+{
+    if (argc == 4 && strcmp(argv[1], "-encode") == 0)
+    {
+        // Compression with -encode flag
+        char *inputFile = argv[2];
+        char *outputFile = argv[3];
+        return CompressFile(inputFile, outputFile) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+    else if (argc == 4 && strcmp(argv[1], "-decode") == 0)
+    {
+        // Decompression with -decode flag
+        char *inputFile = argv[2];
+        char *outputFile = argv[3];
+        return DecompressFile(inputFile, outputFile) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+    else
+    {
+        // Incorrect arguments
+        PrintUsage(argv[0]);
+        return EXIT_FAILURE;
+    }
+}
+
+// Check and resize the output buffer if necessary
+void AdjustOutputBufferSize(LZ77Context *ctx, int additionalBytesNeeded) {
+    int requiredSize = ctx->outputIndex + additionalBytesNeeded;
+    if (requiredSize > ctx->outputLength) {
+        int newLength = requiredSize * 2;  // Double the required size
+        char *newOutput = (char *)realloc(ctx->output, newLength);
+        if (!newOutput) {
+            fprintf(stderr, "Memory reallocation failed\n");
+            free(ctx->output);
+            ctx->output = NULL;
+            ctx->outputLength = 0;
+            return;
+        }
+        ctx->output = newOutput;
+        ctx->outputLength = newLength;
+    }
+}
 
 // Update the hash table with the current index
 void UpdateHash(LZ77Context *ctx, int idx)
@@ -77,43 +138,36 @@ void WriteCompressedBlock(LZ77Context *ctx, int len, int off)
     }
 }
 
-// LZ77 encoding function
-int LZ77Encode(LZ77Context *ctx)
-{
+// LZ77 encoding function with dynamic buffer resizing
+int LZ77Encode(LZ77Context *ctx) {
     int idx = 0, len, off;
     ctx->outputIndex = 0;
     ctx->literalCount = 0;
 
-    while (idx <= ctx->inputLength)
-    {
-        if (idx + 2 < ctx->inputLength)
-        {
+    while (idx <= ctx->inputLength) {
+        if (idx + 2 < ctx->inputLength) {
             len = FindMatch(ctx, idx, &off);
-        }
-        else
-        {
+        } else {
             len = 1;
         }
 
-        if (len > 3 || idx == ctx->inputLength)
-        {
-            while (ctx->literalCount)
-            {
+        if (len > 3 || idx == ctx->inputLength) {
+            while (ctx->literalCount) {
+                AdjustOutputBufferSize(ctx, 1 + ctx->literalCount); // Check buffer before writing literals
+                if (!ctx->output) return -1; // If buffer allocation failed
                 WriteLiteral(ctx, idx);
             }
         }
 
-        if (len > 2 && ctx->literalCount == 0)
-        {
+        if (len > 2 && ctx->literalCount == 0) {
+            AdjustOutputBufferSize(ctx, 3); // Check buffer before writing compressed block
+            if (!ctx->output) return -1; // If buffer allocation failed
             WriteCompressedBlock(ctx, len, off);
-        }
-        else
-        {
+        } else {
             ctx->literalCount += len;
         }
 
-        for (int i = 0; i < len; ++i)
-        {
+        for (int i = 0; i < len; ++i) {
             UpdateHash(ctx, idx++);
         }
     }
@@ -121,47 +175,46 @@ int LZ77Encode(LZ77Context *ctx)
     return ctx->outputIndex;
 }
 
+
 // LZ77 decoding function
-int LZ77Decode(LZ77Context *ctx)
-{
+int LZ77Decode(LZ77Context *ctx) {
     int inIdx = 0, len, offset;
     ctx->outputIndex = 0;
+    ctx->outputLength = ctx->inputLength;  // Assume output length is equal to input length (worst case)
 
-    while (inIdx < ctx->inputLength)
-    {
+    while (inIdx < ctx->inputLength) {
         len = ctx->input[inIdx++] & 0xFF;
 
-        if (len > 127)
-        {
+        if (len & 0x80) { // Compressed block
             len &= 0x7F;
-            offset = ((ctx->input[inIdx] & 0xFF) << 8) | (ctx->input[inIdx + 1] & 0xFF);
-            inIdx += 2;
+            // offset = ((ctx->input[inIdx++] & 0xFF) << 8) | (ctx->input[inIdx++] & 0xFF);
+            offset = ((ctx->input[inIdx] & 0xFF) << 8);
+            inIdx++;
+            offset |= (ctx->input[inIdx] & 0xFF);
+            inIdx++;
 
-            for (int i = 0; i < len; ++i)
-            {
-                if (ctx->output)
-                {
-                    ctx->output[ctx->outputIndex] = ctx->output[ctx->outputIndex - offset];
-                }
+            AdjustOutputBufferSize(ctx, ctx->outputIndex + len);
+            if (!ctx->output) return -1; // Buffer allocation failed
+
+            for (int i = 0; i < len; ++i) {
+                // ctx->output[ctx->outputIndex++] = ctx->output[ctx->outputIndex - offset];
+                ctx->output[ctx->outputIndex] = ctx->output[ctx->outputIndex - offset];
                 ctx->outputIndex++;
+
             }
-        }
-        else
-        {
-            for (int i = 0; i < len; ++i)
-            {
-                if (ctx->output)
-                {
-                    ctx->output[ctx->outputIndex] = ctx->input[inIdx];
-                }
-                ctx->outputIndex++;
-                inIdx++;
+        } else { // Literal block
+            AdjustOutputBufferSize(ctx, ctx->outputIndex + len);
+            if (!ctx->output) return -1; // Buffer allocation failed
+
+            for (int i = 0; i < len; ++i) {
+                ctx->output[ctx->outputIndex++] = ctx->input[inIdx++];
             }
         }
     }
 
     return ctx->outputIndex;
 }
+
 
 // Load file into a dynamically allocated buffer
 long LoadFile(const char *fileName, char **buffer)
@@ -236,6 +289,7 @@ int CompressFile(const char *inputFileName, const char *outputFileName)
 
     ctx.output = NULL;
     ctx.outputLength = ctx.inputLength;
+
     ctx.output = (char *)malloc(ctx.outputLength);
     if (!ctx.output)
     {
@@ -280,7 +334,7 @@ int DecompressFile(const char *inputFileName, const char *outputFileName)
 
     start = clock();
 
-    ctx.output = (char *)malloc(ctx.inputLength * DECOMPRESSION_BUFFER_MULTIPLIER);
+    ctx.output = (char *)malloc(ctx.inputLength);
     if (!ctx.output)
     {
         fprintf(stderr, "Memory allocation for output failed\n");
@@ -316,29 +370,4 @@ void PrintUsage(const char *programName)
 {
     fprintf(stderr, "Usage for compression: %s -encode [input file] [output file]\n", programName);
     fprintf(stderr, "Usage for decompression: %s -decode [input file] [output file]\n", programName);
-}
-
-// Main function
-int main(int argc, char **argv)
-{
-    if (argc == 4 && strcmp(argv[1], "-encode") == 0)
-    {
-        // Compression with -encode flag
-        char *inputFile = argv[2];
-        char *outputFile = argv[3];
-        return CompressFile(inputFile, outputFile) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
-    }
-    else if (argc == 4 && strcmp(argv[1], "-decode") == 0)
-    {
-        // Decompression with -decode flag
-        char *inputFile = argv[2];
-        char *outputFile = argv[3];
-        return DecompressFile(inputFile, outputFile) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
-    }
-    else
-    {
-        // Incorrect arguments
-        PrintUsage(argv[0]);
-        return EXIT_FAILURE;
-    }
 }
